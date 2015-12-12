@@ -29,20 +29,28 @@ def compute_style(style):
     return style_str
 
 class Scene:
-    def __init__(self, size=(400,400)):
+    def __init__(self, size=(400,400), image_name=[]):
         self.items = []
         self.size = size
+        self.image_name = image_name
 
     def add(self,item):
         self.items.append(item)
 
     def strarray(self):
+
+
         var = [
             "<?xml version=\"1.0\"?>\n",
            "<svg height=\"%d\" width=\"%d\" >\n" % (self.size[1],self.size[0]),
            " <g style=\"fill-opacity:1.0; stroke:black;\n",
            "  stroke-width:1;\">\n"
         ]
+        if self.image_name:
+            var += ["<image x=\"0\" y=\"0\" height=\"%ipx\" width=\"%ipx\" "
+                    "xlink:href=\"%s\"/>\n" % (self.size[1],self.size[0], self.image_name)]
+
+
         for item in self.items: var += item.strarray()
         var += [" </g>\n</svg>\n"]
         return var

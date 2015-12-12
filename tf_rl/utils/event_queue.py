@@ -1,6 +1,6 @@
 import time
 
-from queue import PriorityQueue
+from Queue import PriorityQueue
 
 class EqItem(object):
     """Function and sechduled execution timestamp.
