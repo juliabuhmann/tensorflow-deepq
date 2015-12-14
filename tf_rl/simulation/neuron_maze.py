@@ -10,6 +10,10 @@ import time
 import h5py
 from collections import defaultdict
 from euclid import Circle, Point2, Vector2, LineSegment2, Vector3, Point3
+import networkx as nx
+from skeleton import networkx_utils
+from random import choice
+
 
 import tf_rl.utils.svg as svg
 
@@ -24,6 +28,8 @@ class GameObject(object):
         self.position = position
         # self.speed    = speed
         self.bounciness = 1.0
+        self.number_of_steps = 0
+        self.is_outside_world = False
 
 
     def wall_collisions(self):
@@ -42,24 +48,36 @@ class GameObject(object):
         # avoid going out of the wall borders
         world_size = self.settings["world_size"]
         check_outside_world = False
+        self.position += direction
         for dim in range(3):
-            if self.position[dim] < 0:
+            if self.position[dim] < 10:
                 check_outside_world = True
-            elif self.position[dim] >= world_size[dim]-2:
+            elif self.position[dim] >= world_size[dim]-10:
                 check_outside_world = True
         if check_outside_world:
-            self.jump()
-            print "outside world resetting"
+            # self.jump()
+            # print "outside world resetting"
+            self.is_outside_world = True
         else:
-            self.position += direction
+            self.is_outside_world = False
+            self.number_of_steps += 1
+
 
     def jump(self, new_position=None):
+
         if new_position == None:
             new_position = []
             for dim in range(3):
                 new_position.append(np.random.randint(30, self.settings["world_size"][dim]-30))
+        # elif self.outside_world(new_position):
+        #     # check if provided position is outside world
+        #     new_position = []
+        #     for dim in range(3):
+        #         new_position.append(np.random.randint(30, self.settings["world_size"][dim]-30))
+        #     print "position provided is outside of world, setting randomly"
 
         self.position = Point3(new_position[0], new_position[1], new_position[2])
+
 
     # def step(self, dt):
     #     """Move and bounce of walls."""
@@ -69,12 +87,28 @@ class GameObject(object):
     def as_circle(self):
         return Circle(self.position, float(self.radius))
 
-    def draw(self, scale_up=Point2(1, 1)):
+    def draw(self, scale_up=Point2(1, 1), color=None):
         """Return svg object for this item."""
-        color = self.settings["colors"][self.obj_type]
+        if color is None:
+            color = self.settings["colors"][self.obj_type]
+
+
         position_2d = Point2(self.position.x, self.position.y)
         position_2d = Point2(position_2d.x*scale_up.x, position_2d.y*scale_up.y)
         return svg.Circle(position_2d, self.radius, color=color)
+
+    def outside_world(self, pos=None, margin=30):
+        world_size = self.settings["world_size"]
+        check_outside_world = False
+        if pos is None:
+            pos = self.position
+        for dim in range(3):
+            if pos[dim] < margin:
+                check_outside_world = True
+            elif pos[dim] >= world_size[dim]-margin:
+                check_outside_world = True
+        return check_outside_world
+
 
 class NeuronMaze(object):
     def __init__(self, settings):
@@ -112,9 +146,13 @@ class NeuronMaze(object):
         self.directions = [Vector3(*d) for d in [[1, 0, 0], [0, 1, 0], [-1, 0, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]]
         self.num_actions = len(self.directions)
         self.observation_lines = [Vector3(*d) for d in [[1, 0, 0], [0, 1, 0], [-1, 0, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]]
+        self.observation_lines.extend([Vector3(*d)*3 for d in [[1, 0, 0], [0, 1, 0], [-1, 0, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]])
+        self.observation_lines.extend([Vector3(*d)*5 for d in [[1, 0, 0], [0, 1, 0], [-1, 0, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]])
         self.observation_size = len(self.observation_lines)
         self.objects_eaten = defaultdict(lambda: 0)
         self.image_name = settings['image_name']
+        self.removed_objects = []
+        self.margin = [30, 30, 10]
         # Load reward matrix
         try:
             reward_filename = settings['reward_matrix_filename']
@@ -122,6 +160,7 @@ class NeuronMaze(object):
             reward_matrix = f['distance'].value
             f.close()
             self.reward_matrix = reward_matrix
+            self.reward_matrix_ori = reward_matrix.copy()
         except KeyError:
             print "%s does not exist" %reward_filename
 
@@ -134,24 +173,109 @@ class NeuronMaze(object):
         except KeyError:
             print "%s does not exist" %observation_filename
 
+        if 'nx_skeleton_filename' in settings:
+            nx_skeleton_filename = settings['nx_skeleton_filename']
+            try:
+                loaded_skeleton = nx.read_gpickle(nx_skeleton_filename)
+                self.nx_graph = loaded_skeleton
+                # Prepare objects
+                self.skeletons_to_objects()
+                nx_graph_dic = networkx_utils.create_seg_id_to_nx_graph_dic(loaded_skeleton)
+                self.nx_graph_dic = nx_graph_dic
+            except KeyError:
+                print "%s does not exist" %nx_skeleton_filename
+
+        if 'volumetric_objects_filename' in settings:
+            volumetric_objects_filename = settings['volumetric_objects_filename']
+            try:
+                f = h5py.File(volumetric_objects_filename, 'r')
+                data = f['seg'].value
+                f.close()
+                self.volumetric_object_matrix = data
+            except KeyError:
+                print "%s does not exist" %volumetric_objects_filename
+        self.reinitialize_world()
+
+
+    def skeletons_to_objects(self, seg_id=None):
+        # If seg_id is given, only nodes are added as objects that have the specific seg_id
+        margin = self.margin
+        world_size = self.settings['world_size']
+        lower_bound = margin
+        upper_bound = np.array(world_size) - np.array(lower_bound)
+        networkx_utils.crop_nx_graph(self.nx_graph, lower_bound, upper_bound)
+        for node_id, node_attr in self.nx_graph.nodes_iter(data=True):
+            pos = node_attr['position']
+            pos = Point3(pos[0], pos[1], pos[2])
+            if seg_id is not None:
+                current_seg_id = node_attr['seg_id']
+                if current_seg_id == seg_id:
+                    self.spawn_object('skeleton', pos)
+                    degree_of_current_node = nx.degree(self.nx_graph)[node_id]
+                    if degree_of_current_node == 1:
+                        self.spawn_object('endnode', pos)
+                if 'volumetric_objects_filename' in self.settings:
+                    seg_id_vol = self.volumetric_object_matrix[pos.x, pos.y, pos.z]
+                    assert current_seg_id == seg_id_vol
+            else:
+                self.spawn_object('skeleton', pos)
+
 
     def perform_action(self, action_id):
         """Change speed to one of hero vectors"""
         assert 0 <= action_id < self.num_actions
         # self.hero.position += self.directions[action_id]
         self.hero.move(self.directions[action_id])
+        if self.hero.is_outside_world:
+            # Reinitialize world
+            self.reinitialize_world()
+            # Punish the bouncing in the wall
+            self.object_reward = self.settings['wall_reward']
+        else:
+            self.resolve_collisions()
         # self.hero.speed += self.directions[action_id] * self.settings["delta_v"]
 
-    def spawn_object(self, obj_type):
+    def reinitialize_world(self):
+        if 'nx_skeleton_filename' in self.settings:
+            rand_node = choice(self.nx_graph.nodes())
+            pos = self.nx_graph.node[rand_node]['position']
+            self.hero.jump(pos)
+        else:
+            self.jump()
+            print "resetting world"
+        #Get id for position
+        pos = self.hero.position
+        if 'volumetric_objects_filename' in self.settings:
+            seg_id = self.volumetric_object_matrix[pos.x, pos.y, pos.z]
+            new_reward_matrix = self.reward_matrix_ori.copy()
+            new_reward_matrix[self.volumetric_object_matrix != seg_id] = 0
+            self.reward_matrix = new_reward_matrix
+            self.observation_matrix = new_reward_matrix
+        else:
+            seg_id= None
+        # #Reinitialize the skeletons
+        # for obj in self.removed_objects:
+        #     self.objects.append(obj)
+        self.objects = []
+        self.removed_objects= []
+        self.skeletons_to_objects(seg_id=seg_id)
+
+
+
+    def spawn_object(self, obj_type, pos=None):
         """Spawn object of a given type and add it to the objects array"""
         radius = self.settings["object_radius"]
-        position = np.random.uniform([radius, radius, radius], np.array(self.size) - radius)
-        position = Point3(float(position[0]), float(position[1]), float(position[2]))
+
         # max_speed = np.array(self.settings["maximum_speed"])
         # speed    = np.random.uniform(-max_speed, max_speed).astype(float)
         # speed = Vector2(float(speed[0]), float(speed[1]))
+        if pos is not None:
+            self.objects.append(GameObject(pos, obj_type, self.settings))
+        else:
+            pos = np.random.uniform([radius, radius, radius], np.array(self.size) - radius)
+            pos = Point3(float(pos[0]), float(pos[1]), float(pos[2]))
+            self.objects.append(GameObject(pos, obj_type, self.settings))
 
-        self.objects.append(GameObject(position, obj_type, self.settings))
 
     def step(self, dt):
         """Simulate all the objects for a given ammount of time.
@@ -166,18 +290,25 @@ class NeuronMaze(object):
         return (p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2
 
     def resolve_collisions(self):
-        """If hero touches, hero eats. Also reward gets updated."""
+        """If hero is on position, hero eats. Also reward gets updated."""
         collision_distance = 2 * self.settings["object_radius"]
         collision_distance2 = collision_distance ** 2
         to_remove = []
         for obj in self.objects:
             if self.squared_distance(self.hero.position, obj.position) < collision_distance2:
                 to_remove.append(obj)
+
+        check_for_goal = False
         for obj in to_remove:
             self.objects.remove(obj)
             self.objects_eaten[obj.obj_type] += 1
+            self.removed_objects.append(obj)
             self.object_reward += self.settings["object_reward"][obj.obj_type]
-            self.spawn_object(obj.obj_type)
+            if 'endnode' in obj.obj_type:
+                check_for_goal = True
+        if check_for_goal:
+            self.reinitialize_world()
+
 
     def inside_walls(self, point):
         """Check if the point is inside the walls"""
@@ -285,15 +416,26 @@ class NeuronMaze(object):
         # assert wall_reward < 1e-3, "You are rewarding hero for being close to the wall!"
         # Get reward from reward matrix
         current_position = self.hero.position
-        reward = self.reward_matrix[int(current_position.x), int(current_position.y), int(current_position.z)]
+        # max_value = np.amax(self.reward_matrix)
+        reward = self.reward_matrix[int(current_position.x), int(current_position.y), int(current_position.z)]/10.
+        if reward == 0:
+            reward = -10
+        # if self.object_reward != 0:
+            # reward = 0
+        # if reward == -10:
+        #     assert self.object_reward == 0
+        reward += self.object_reward
         # total_reward = self.object_reward
         # self.object_reward = 0
         self.collected_rewards.append(reward)
+        self.object_reward = 0
+
         return reward
 
     def plot_reward(self, smoothing = 30):
         """Plot evolution of reward over time."""
         plottable = self.collected_rewards[:]
+        print np.max(np.array(plottable))
         while len(plottable) > 1000:
             for i in range(0, len(plottable) - 1, 2):
                 plottable[i//2] = (plottable[i] + plottable[i+1]) / 2
@@ -329,14 +471,19 @@ class NeuronMaze(object):
         section_id_str = '%04i' %section_id
         image_name = self.image_name + section_id_str + ".png"
         scene = svg.Scene((size_value[0]*scale_up.x, size_value[1]*scale_up.y), image_name=image_name)
-
-
         # for line in self.observation_lines:
         #     scene.add(svg.Line(line.p1 + self.hero.position*scale_up,
         #                        line.p2 + self.hero.position*scale_up))
 
-        for obj in self.objects + [self.hero] :
-            scene.add(obj.draw(scale_up=scale_up))
+        for obj in self.objects + [self.hero]:
+            z_pos = obj.position.z
+            if z_pos == section_id:
+                scene.add(obj.draw(scale_up=scale_up))
+        for obj in self.removed_objects:
+            z_pos = obj.position.z
+            if z_pos == section_id:
+                scene.add(obj.draw(scale_up=scale_up, color='green'))
+
 
         return scene
 

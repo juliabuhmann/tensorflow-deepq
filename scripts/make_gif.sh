@@ -10,7 +10,8 @@ set -o pipefail
 SCRIPT_DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 
 
-images_directory=${1:-}
+images_directory=$1
+output_filename=$2
 if [[ -z "$images_directory" ]]
 then
     echo "Usage $0 images_directory"
@@ -24,4 +25,6 @@ do
         inkscape -z -e $img.png -b white $img
     fi
 done
-convert -delay 3 -loop 0 $(ls $images_directory/*.png | sort -V) animation.gif
+
+convert -delay 3 -loop 0 $(ls $images_directory/*.png | sort -V) $output_filename
+echo "pngs converted to animated gif, stored in $output_filename"
