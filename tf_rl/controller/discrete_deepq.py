@@ -5,6 +5,7 @@ import tensorflow as tf
 from collections import deque
 
 class DiscreteDeepQ(object):
+    #TODO: Batch training and inference not efficiently implemented
     def __init__(self, observation_size,
                        num_actions,
                        observation_to_actions,
@@ -18,6 +19,9 @@ class DiscreteDeepQ(object):
                        discount_rate=0.95,
                        max_experience=30000,
                        target_network_update_rate=0.01,
+                       clip_loss_function = False,
+                       clip_reward = False,
+                       replay_start_size= 1000,
                        summary_writer=None):
         """Initialized the Deepq object.
 
@@ -92,6 +96,7 @@ class DiscreteDeepQ(object):
         self.max_experience            = max_experience
         self.target_network_update_rate = \
                 tf.constant(target_network_update_rate)
+        self.replay_start_size = replay_start_size
 
         # deepq state
         self.actions_executed_so_far = 0
@@ -102,12 +107,17 @@ class DiscreteDeepQ(object):
 
         self.number_of_times_store_called = 0
         self.number_of_times_train_called = 0
+        self.clip_loss_function = clip_loss_function
+        self.clip_reward = clip_reward
+        self.collected_prediction_errors = []
 
         self.create_variables()
 
     def linear_annealing(self, n, total, p_initial, p_final):
         """Linear annealing between p_initial and p_final
         over total steps - computes value at step n"""
+        if n == total:
+            print "exploration period over"
         if n >= total:
             return p_final
         else:
@@ -130,6 +140,8 @@ class DiscreteDeepQ(object):
             self.next_action_scores        = tf.stop_gradient(self.target_q_network(self.next_observation))
             tf.histogram_summary("target_action_scores", self.next_action_scores)
             self.rewards                   = tf.placeholder(tf.float32, (None,), name="rewards")
+            reward_batch                   = tf.reduce_mean(self.rewards)
+            tf.scalar_summary('reward_batch', reward_batch)
             target_values                  = tf.reduce_max(self.next_action_scores, reduction_indices=[1,]) * self.next_observation_mask
             self.future_rewards            = self.rewards + self.discount_rate * target_values
 
@@ -138,7 +150,12 @@ class DiscreteDeepQ(object):
             self.action_mask                = tf.placeholder(tf.float32, (None, self.num_actions), name="action_mask")
             self.masked_action_scores       = tf.reduce_sum(self.action_scores * self.action_mask, reduction_indices=[1,])
             temp_diff                       = self.masked_action_scores - self.future_rewards
-            self.prediction_error           = tf.reduce_mean(tf.square(temp_diff))
+            if self.clip_loss_function:
+                self.prediction_error       = tf.reduce_mean(tf.square(tf.clip_by_value(temp_diff, -1.0, 1.0,
+                                                                name='clipping_loss')))
+            else:
+                self.prediction_error           = tf.reduce_mean(tf.square(temp_diff), name='error_function')
+
             gradients                       = self.optimizer.compute_gradients(self.prediction_error)
             for i, (grad, var) in enumerate(gradients):
                 if grad is not None:
@@ -149,6 +166,8 @@ class DiscreteDeepQ(object):
                 if grad:
                     tf.histogram_summary(var.name + '/gradients', grad)
             self.train_op                   = self.optimizer.apply_gradients(gradients)
+
+
 
         # UPDATE TARGET NETWORK
         with tf.name_scope("target_network_update"):
@@ -161,11 +180,13 @@ class DiscreteDeepQ(object):
 
         # summaries
         tf.scalar_summary("prediction_error", self.prediction_error)
-
+        self.prediction_error_collection_tf = tf.placeholder(tf.float32)
+        self.average_prediction_error = tf.reduce_mean(self.prediction_error_collection_tf)
+        tf.scalar_summary("averaged_prediction_error", self.average_prediction_error)
         self.summarize = tf.merge_all_summaries()
         self.no_op1    = tf.no_op()
 
-    def action(self, observation):
+    def action(self, observation, randomness=True):
         """Given observation returns the action that should be chosen using
         DeepQ learning strategy. Does not backprop."""
         assert len(observation.shape) == 1, \
@@ -177,7 +198,8 @@ class DiscreteDeepQ(object):
                                               1.0,
                                               self.random_action_probability)
 
-        if random.random() < exploration_p:
+
+        if random.random() < exploration_p and randomness:
             return random.randint(0, self.num_actions - 1)
         else:
             return self.s.run(self.predicted_actions, {self.observation: observation[np.newaxis,:]})[0]
@@ -199,55 +221,66 @@ class DiscreteDeepQ(object):
         """Pick a self.minibatch_size exeperiences from reply buffer
         and backpropage the value function.
         """
-        if self.number_of_times_train_called % self.train_every_nth == 0:
-            if len(self.experience) <  self.minibatch_size:
-                return
-
-            # sample experience.
-            samples   = random.sample(range(len(self.experience)), self.minibatch_size)
-            samples   = [self.experience[i] for i in samples]
-
-            # bach states
-            states         = np.empty((len(samples), self.observation_size))
-            newstates      = np.empty((len(samples), self.observation_size))
-            action_mask    = np.zeros((len(samples), self.num_actions))
-
-            newstates_mask = np.empty((len(samples),))
-            rewards        = np.empty((len(samples),))
-
-            for i, (state, action, reward, newstate) in enumerate(samples):
-                states[i] = state
-                action_mask[i] = 0
-                action_mask[i][action] = 1
-                rewards[i] = reward
-                if newstate is not None:
-                    newstates[i] = newstate
-                    newstates_mask[i] = 1
-                else:
-                    newstates[i] = 0
-                    newstates_mask[i] = 0
+        # if self.number_of_times_train_called % self.train_every_nth == 0:
+        if len(self.experience) <  self.minibatch_size or len(self.experience) \
+                < self.replay_start_size:
+            # print 'returning'
+            return
+            # if len(self.experience)< self.minibatch_size:
+            #         return
 
 
-            calculate_summaries = self.iteration % 100 == 0 and \
-                    self.summary_writer is not None
+        # sample experience.
+        samples   = random.sample(range(len(self.experience)), self.minibatch_size)
+        samples   = [self.experience[i] for i in samples]
 
-            cost, _, summary_str = self.s.run([
-                self.prediction_error,
-                self.train_op,
-                self.summarize if calculate_summaries else self.no_op1,
-            ], {
-                self.observation:            states,
-                self.next_observation:       newstates,
-                self.next_observation_mask:  newstates_mask,
-                self.action_mask:            action_mask,
-                self.rewards:                rewards,
-            })
+        # bach states
+        states         = np.empty((len(samples), self.observation_size))
+        newstates      = np.empty((len(samples), self.observation_size))
+        action_mask    = np.zeros((len(samples), self.num_actions))
 
-            self.s.run(self.target_network_update)
+        newstates_mask = np.empty((len(samples),))
+        rewards        = np.empty((len(samples),))
 
-            if calculate_summaries:
-                self.summary_writer.add_summary(summary_str, self.iteration)
+        for i, (state, action, reward, newstate) in enumerate(samples):
+            # Clip the reward to be in the range of -1 and 1 as suggested in the paper
+            if self.clip_reward:
+                reward = np.clip(reward, -1.0, 1.0)
+            states[i] = state
+            action_mask[i] = 0
+            action_mask[i][action] = 1
+            rewards[i] = reward
+            if newstate is not None:
+                newstates[i] = newstate
+                newstates_mask[i] = 1
+            else:
+                newstates[i] = 0
+                newstates_mask[i] = 0
 
-            self.iteration += 1
+        monitor_interval = 100
+        calculate_summaries = self.iteration % monitor_interval == 0 and \
+                self.summary_writer is not None
+
+        cost, _, summary_str = self.s.run([
+            self.prediction_error,
+            self.train_op,
+            self.summarize if calculate_summaries else self.no_op1,
+        ], {
+            self.observation:            states,
+            self.next_observation:       newstates,
+            self.next_observation_mask:  newstates_mask,
+            self.action_mask:            action_mask,
+            self.rewards:                rewards,
+            self.prediction_error_collection_tf: self.collected_prediction_errors[-monitor_interval:],
+        })
+
+        self.s.run(self.target_network_update)
+
+        if calculate_summaries:
+
+            self.summary_writer.add_summary(summary_str, self.iteration)
+
+        self.iteration += 1
+        self.collected_prediction_errors.append(cost)
 
         self.number_of_times_train_called += 1

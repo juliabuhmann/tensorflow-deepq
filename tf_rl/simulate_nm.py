@@ -123,7 +123,7 @@ def control(simulation, controller, ctrl_s,
     if game_watcher is not None:
         game_watcher.actions.append(new_action)
 
-    step_limit = 1500
+    step_limit = 200
     # if simulation.hero.number_of_steps%step_limit == 0 and not disable_training:
     if simulation.hero.number_of_steps%step_limit == 0:
         # simulation.reinitialize_world()
@@ -168,7 +168,8 @@ def do_evaluation(simulation, session, controller, var_dic, global_step,
                                   disable_training=True,
                                   tf_ops=var_dic, session=session,
                                              game_watcher=test_game_watcher)
-        if len(simulation.hero.visited_positions) > 4:
+        # print 'len of visit positions', len(simulation.hero.visited_positions)
+        if len(simulation.hero.visited_positions) > 1:
             test_game_watcher.number_of_games += 1
 
             skeleton_ratio = simulation.objects_eaten['skeleton']/float(number_of_gt_skeleton)
@@ -194,6 +195,19 @@ def do_evaluation(simulation, session, controller, var_dic, global_step,
             nx_skeleton.nx_graph.node[node_id_of_graph]['comment'] = 'start'
             node_id_of_graph = pos_to_node_id_dic[last_pos]
             nx_skeleton.nx_graph.node[node_id_of_graph]['comment'] = 'end'
+            if simulation.hero.is_outside_world:
+                print 'stepped outside world'
+                # Check whether agent left world within the correct neuron
+                seg_id_of_gt_neuron = simulation.volumetric_object_matrix[first_pos[0],
+                                                                          first_pos[1], first_pos[2]]
+                seg_id_of_agent = simulation.volumetric_object_matrix[last_pos[0],
+                                                                          last_pos[1], last_pos[2]]
+                if seg_id_of_gt_neuron == seg_id_of_agent:
+                    last_neuron_comment = 'within_neuron_end'
+                else:
+                    last_neuron_comment = 'looser'
+
+                nx_skeleton.nx_graph.node[node_id_of_graph]['comment'] = last_neuron_comment
 
             for pos in simulation.hero.collected_eaten_obj['endnode_hero_pos']:
                 node_id_of_graph = pos_to_node_id_dic[tuple([pos.x, pos.y, pos.z])]
@@ -223,6 +237,102 @@ def do_evaluation(simulation, session, controller, var_dic, global_step,
 
 
 def simulate_neuron_maze(session, simulation,
+             controller = None,
+             speed=1.0,
+             disable_training=False,
+             img_save_path=None, saver=None, store_path=None,
+             test_simulation=None,
+             simulation_training_dic=None,
+             display_var=True, inference_outputpath=None):
+    """Start the simulation. Performs three tasks
+
+        - visualizes simulation in iPython notebook
+        - advances simulator state
+        - reports state to controller and chooses actions
+          to be performed.
+
+    Parameters
+    -------
+    simulation: tr_lr.simulation
+        simulation that will be simulated ;-)
+    controller: tr_lr.controller
+        controller used
+    fps: int
+        frames per seconds to display;
+        decrease for faster training.
+    actions_per_simulation_second: int
+        how many times perform_action is called per
+        one second of simulation time
+    speed: float
+        executed <speed> seconds of simulation time
+        per every second of real time
+    disable_training: bool
+        if true training_step is never called.
+    save_path: str
+        save svg visualization (only tl_rl.utils.svg
+        supported for the moment)
+    """
+    ctrl_s = {
+        'last_observation': None,
+        'last_action':      None,
+    }
+    ctrl_s_test = ctrl_s.copy()
+    print ctrl_s, ctrl_s_test
+    # Tensorflow values for monitoring game (that are not related to controller)
+    fl_pl = tf.placeholder(tf.float32, name='fl_pl')
+    var_dic = {}
+    var_dic['fl_placeholder'] = fl_pl
+    for type_of_data in ['train', 'test']:
+        sum_reward = tf.scalar_summary('reward_%s'%type_of_data, fl_pl)
+        sum_1 = tf.scalar_summary('ratioreachedgoalstototal_%s'%type_of_data, fl_pl)
+        sum_2= tf.scalar_summary('ratiosteppedoutsideneurontototal_%s'%type_of_data, fl_pl)
+        sum_3= tf.scalar_summary('perc_skeletonsteps_%s'%type_of_data, fl_pl)
+        var_dic['reward_%s'%type_of_data] = sum_reward
+        var_dic['skstepratio_%s'%type_of_data] = sum_1
+        var_dic['instepratio_%s'%type_of_data] = sum_2
+        var_dic['perc_skeletonsteps_%s'%type_of_data] = sum_3
+
+    train_game_watcher = GameWatcher()
+    print 'starting playing the game'
+    global_step = 0
+    while global_step < 1000000000:
+        ctrl_s, stop_sign = control(simulation, controller, ctrl_s,
+            disable_training=False, img_save_path=None,
+            session=session, tf_ops=var_dic,
+            global_step=global_step, game_watcher=train_game_watcher)
+        if display_var:
+            visualize(simulation)
+        if stop_sign:
+            # This means that the agent left the world or world was
+            # reinitialized so that one can exchange simulations without problem
+            # print 'taken actions', simulation.hero.taken_actions
+            if simulation_training_dic is not None:
+                simulation_key = random.choice(simulation_training_dic.keys())
+                simulation = simulation_training_dic[simulation_key]
+            simulation.reinitialize_world()
+            train_game_watcher.number_of_games += 1
+
+        if (global_step + 1) % 1000 == 0:
+            # Store model
+            print 'global step %i' %global_step
+            if saver is not None and store_path is not None:
+                saver.save(session, store_path, global_step=global_step)
+            do_evaluation(test_simulation, session, controller, var_dic,
+                          global_step, type_of_data='test',
+                          inference_outputpath=inference_outputpath,
+                          experience_collection=ctrl_s_test)
+            for train_simulation in simulation_training_dic.values()[:1]:
+                do_evaluation(train_simulation, session, controller, var_dic,
+                  global_step, type_of_data='train', inference_outputpath=inference_outputpath,
+                  experience_collection=ctrl_s)
+
+
+
+        global_step += 1
+
+
+
+def simulate_neuron_maze_inference(session, simulation,
              controller = None,
              speed=1.0,
              disable_training=False,
@@ -315,45 +425,3 @@ def simulate_neuron_maze(session, simulation,
 
 
         global_step += 1
-
-
-
-def simulate_neuron_maze_inference(session, simulation,
-                                   inference_outputpath,
-             controller = None,
-             display_var=True):
-    ctrl_s = {
-        'last_observation': None,
-        'last_action':      None,
-    }
-    ctrl_s_test = ctrl_s.copy()
-    # Tensorflow values for monitoring game (that are not related to controller)
-    fl_pl = tf.placeholder(tf.float32, name='fl_pl')
-    # var_dic = {}
-    # var_dic['fl_placeholder'] = fl_pl
-    # for type_of_data in ['train', 'test']:
-    #     sum_reward = tf.scalar_summary('reward_%s'%type_of_data, fl_pl)
-    #     sum_1 = tf.scalar_summary('skstepratio_%s'%type_of_data, fl_pl)
-    #     sum_2= tf.scalar_summary('instepratio_%s'%type_of_data, fl_pl)
-    #     var_dic['reward_%s'%type_of_data] = sum_reward
-    #     var_dic['skstepratio_%s'%type_of_data] = sum_1
-    #     var_dic['instepratio_%s'%type_of_data] = sum_2
-    # test_game_watcher = GameWatcher()
-    #
-    # step_counter = 0
-    # while step_counter < 1000000000:
-    #     ctrl_s_test, stop_sign = control(simulation, controller,
-    #                           ctrl_s_test, vis_s,
-    #                           disable_training=True,
-    #                           tf_ops=var_dic, session=session, game_watcher=test_game_watcher)
-    #     step_counter += 1
-    # print 'testing end'
-    # print 'number of outside stepped games', test_game_watcher.number_of_outside_steps
-    # print 'number of reached goals', test_game_watcher.number_of_reached_goals
-    # inference_outputpath += '/statistics.h5'
-    # print inference_outputpath
-    # print test_game_watcher.actions
-    # f = h5py.File(inference_outputpath, 'w', overwrite=True)
-    # f.create_dataset('actions', data=test_game_watcher.actions)
-    # f.close()
-

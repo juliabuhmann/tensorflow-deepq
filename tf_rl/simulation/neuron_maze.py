@@ -165,6 +165,9 @@ class NeuronMaze(object):
         self.settings = settings
         self.size = self.settings["world_size"]
 
+        voxel_factors = settings['voxel_factors']
+        self.voxel_factors = Point3(*voxel_factors)
+
         self.hero = GameObject(Point3(self.size[0]//2, self.size[1]//2, self.size[2]//2),
                                "hero",
                                self.settings)
@@ -236,6 +239,9 @@ class NeuronMaze(object):
         self.distance_reward_factor = settings['rewards']['distance_reward_factor']
 
         self.objects_eaten = defaultdict(lambda: 0)
+        self.proximity_dic = defaultdict(lambda: 0)
+        for object_type, max_distance in settings['rewards']['proximity_dic'].iteritems():
+            self.proximity_dic[object_type] = max_distance
         self.image_name = settings['image_name']
         self.removed_objects = []
         self.margin = [30, 30, 10]
@@ -393,7 +399,7 @@ class NeuronMaze(object):
         else:
             self.resolve_collisions()
 
-    def reinitialize_world(self, nx_graph_id=None, center_node=True, start_node=False, number_of_initial_steps=0):
+    def reinitialize_world(self, nx_graph_id=None, center_node=False, start_node=False, number_of_initial_steps=0):
         # assert nx_graph_id is None and node_id is not None,'node id can only be specified when also nx_graph id is specified'
         self.hero.reset()
         blocked_objects = []
@@ -482,7 +488,15 @@ class NeuronMaze(object):
             self.objects.append(GameObject(pos, obj_type, self.settings))
 
     def squared_distance(self, p1, p2):
-        return (p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2
+        # return (p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2
+
+        voxel_factors = self.voxel_factors
+        return ((p1-p2)*voxel_factors).magnitude_squared()
+
+    def distance(self, p1, p2):
+        # Accounts for possible anisotropy
+        voxel_factors = self.voxel_factors
+        return ((p1-p2)*voxel_factors).magnitude()
 
     def resolve_collisions(self):
         """If hero is on position, hero eats. Also reward gets updated."""
@@ -491,15 +505,45 @@ class NeuronMaze(object):
         to_remove = []
         distance_list = []
         object_list = []
+        proximity_distance_list = []
+        proximity_object_list = []
+        proximity_to_reward = []
         for obj in self.objects:
             if self.squared_distance(self.hero.position, obj.position) < collision_distance2:
                 distance_list.append(self.squared_distance(self.hero.position, obj.position))
                 object_list.append(obj)
+            # Sense the proximity but do not eat the object,
+            # but still get either punishement or reward for proximity
+            for obj_type, max_distance in self.proximity_dic.iteritems():
+                if self.squared_distance(self.hero.position, obj.position) < (2*max_distance)**2:
+                    proximity_distance_list.append(self.distance(self.hero.position, obj.position))
+                    proximity_object_list.append(obj)
+
+        assert len(self.proximity_dic) <= 1
+
         if distance_list:
             # Here, only the closest object gets eaten. This assures that several 'skeleton' objects do
             # not get eaten at once
             min_index = np.argmin(np.array(distance_list))
             to_remove.append(object_list[min_index])
+
+        if proximity_distance_list:
+
+            max_distance = self.proximity_dic['skeleton']
+            min_index = np.argmin(np.array(proximity_distance_list))
+            distance = proximity_distance_list[min_index]
+            proximity_to_reward.append(proximity_object_list[min_index])
+            prox_reward = ((distance-max_distance)**2)
+            if (max_distance - distance) < 0:
+                # prox_reward = (max_distance- distance)
+                prox_reward = 0
+            # Normalize number by highest possible score
+            prox_reward /= max_distance**2
+            self.object_reward += prox_reward
+            # print prox_reward
+
+        # If there is an object in proximity, get reward accordingly
+
         check_for_goal = False
         assert len(to_remove) <= 1
         for obj in to_remove:
