@@ -22,7 +22,8 @@ class DiscreteDeepQ(object):
                        clip_loss_function = False,
                        clip_reward = False,
                        replay_start_size= 1000,
-                       summary_writer=None):
+                       summary_writer=None,
+                       game_watcher=None):
         """Initialized the Deepq object.
 
         Based on:
@@ -110,6 +111,7 @@ class DiscreteDeepQ(object):
         self.clip_loss_function = clip_loss_function
         self.clip_reward = clip_reward
         self.collected_prediction_errors = []
+        self.game_watcher = game_watcher
 
         self.create_variables()
 
@@ -143,12 +145,27 @@ class DiscreteDeepQ(object):
             reward_batch                   = tf.reduce_mean(self.rewards)
             tf.scalar_summary('reward_batch', reward_batch)
 
-            self.last_rewards               = tf.placeholder(tf.float32, (None,))
-            last_rewards                    = tf.reduce_mean(self.last_rewards)
-            tf.scalar_summary('last_rewards_mean', last_rewards)
+
 
             target_values                  = tf.reduce_max(self.next_action_scores, reduction_indices=[1,]) * self.next_observation_mask
             self.future_rewards            = self.rewards + self.discount_rate * target_values
+
+        with tf.name_scope("tensorboard_monitoring"):
+            self.last_rewards               = tf.placeholder(tf.float32, (None,))
+            last_rewards                    = tf.reduce_mean(self.last_rewards)
+            tf.scalar_summary('last_rewards_mean', last_rewards)
+            if self.game_watcher is not None:
+                self.winning_games = tf.placeholder(tf.float32, (None))
+                self.got_lost = tf.placeholder(tf.float32, (None))
+                self.stepped_outside = tf.placeholder(tf.float32, (None))
+                winning_games_op = tf.identity(self.winning_games)
+                got_lost_op = tf.identity(self.got_lost)
+                stepped_outside_op = tf.identity(self.stepped_outside)
+                tf.scalar_summary('games_winning', winning_games_op)
+                tf.scalar_summary('games_gotlost', got_lost_op)
+                tf.scalar_summary('games_steppedoutside', stepped_outside_op)
+
+
 
         with tf.name_scope("q_value_precition"):
             # FOR PREDICTION ERROR
@@ -216,11 +233,12 @@ class DiscreteDeepQ(object):
 
         If newstate is None, the state/action pair is assumed to be terminal
         """
-        if self.number_of_times_store_called % self.store_every_nth == 0:
-            self.experience.append((observation, action, reward, newobservation))
-            if len(self.experience) > self.max_experience:
-                self.experience.popleft()
-        self.number_of_times_store_called += 1
+        if self.iteration < 25000:
+            if self.number_of_times_store_called % self.store_every_nth == 0:
+                self.experience.append((observation, action, reward, newobservation))
+                if len(self.experience) > self.max_experience:
+                    self.experience.popleft()
+            self.number_of_times_store_called += 1
 
     def training_step(self):
         """Pick a self.minibatch_size exeperiences from reply buffer
@@ -275,13 +293,7 @@ class DiscreteDeepQ(object):
                 experiences = [self.experience[i][2] for i in range(-sample_size, -1)]
 
 
-
-
-        cost, _, summary_str = self.s.run([
-            self.prediction_error,
-            self.train_op,
-            self.summarize if calculate_summaries else self.no_op1,
-        ], {
+        feed_dict = {
             self.observation:            states,
             self.next_observation:       newstates,
             self.next_observation_mask:  newstates_mask,
@@ -289,7 +301,23 @@ class DiscreteDeepQ(object):
             self.rewards:                rewards,
             self.prediction_error_collection_tf: self.collected_prediction_errors[-monitor_interval:],
             self.last_rewards: np.array(experiences)
-        })
+        }
+
+        if self.game_watcher is not None:
+            game_watcher = self.game_watcher
+            number_of_total_games = float(game_watcher.number_of_games)
+            if number_of_total_games == 0:
+                number_of_total_games = 1
+            feed_dict[self.winning_games] = game_watcher.number_of_reached_goals/number_of_total_games
+            feed_dict[self.got_lost] = game_watcher.number_of_lost_games/number_of_total_games
+            feed_dict[self.stepped_outside] = game_watcher.number_of_outside_steps/number_of_total_games
+            # print game_watcher.number_of_reached_goals/number_of_total_games
+
+        cost, _, summary_str = self.s.run([
+            self.prediction_error,
+            self.train_op,
+            self.summarize if calculate_summaries else self.no_op1,
+        ], feed_dict)
 
         self.s.run(self.target_network_update)
 
