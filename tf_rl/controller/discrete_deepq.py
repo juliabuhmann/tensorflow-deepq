@@ -233,12 +233,12 @@ class DiscreteDeepQ(object):
 
         If newstate is None, the state/action pair is assumed to be terminal
         """
-        if self.iteration < 25000:
-            if self.number_of_times_store_called % self.store_every_nth == 0:
-                self.experience.append((observation, action, reward, newobservation))
-                if len(self.experience) > self.max_experience:
-                    self.experience.popleft()
-            self.number_of_times_store_called += 1
+
+        if self.number_of_times_store_called % self.store_every_nth == 0:
+            self.experience.append((observation, action, reward, newobservation))
+            if len(self.experience) > self.max_experience:
+                self.experience.popleft()
+        self.number_of_times_store_called += 1
 
     def training_step(self):
         """Pick a self.minibatch_size exeperiences from reply buffer
