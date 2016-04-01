@@ -143,6 +143,10 @@ class DiscreteDeepQ(object):
             reward_batch                   = tf.reduce_mean(self.rewards)
             tf.scalar_summary('reward_batch', reward_batch)
 
+            self.last_rewards               = tf.placeholder(tf.float32, (None,))
+            last_rewards                    = tf.reduce_mean(self.last_rewards)
+            tf.scalar_summary('last_rewards_mean', last_rewards)
+
             target_values                  = tf.reduce_max(self.next_action_scores, reduction_indices=[1,]) * self.next_observation_mask
             self.future_rewards            = self.rewards + self.discount_rate * target_values
 
@@ -262,6 +266,17 @@ class DiscreteDeepQ(object):
         calculate_summaries = self.iteration % monitor_interval == 0 and \
                 self.summary_writer is not None
 
+        experiences = [0]
+        if calculate_summaries:
+            length_of_experience = len(self.experience)
+            sample_size = 500
+
+            if length_of_experience > sample_size:
+                experiences = [self.experience[i][2] for i in range(-sample_size, -1)]
+
+
+
+
         cost, _, summary_str = self.s.run([
             self.prediction_error,
             self.train_op,
@@ -273,17 +288,12 @@ class DiscreteDeepQ(object):
             self.action_mask:            action_mask,
             self.rewards:                rewards,
             self.prediction_error_collection_tf: self.collected_prediction_errors[-monitor_interval:],
+            self.last_rewards: np.array(experiences)
         })
 
         self.s.run(self.target_network_update)
 
         if calculate_summaries:
-            length_of_experience = len(self.experience)
-            sample_size = 100
-            if length_of_experience > sample_size:
-                experiences = [self.experience[i] for i in range(-sample_size, -1)]
-
-
             self.summary_writer.add_summary(summary_str, self.iteration)
 
         self.iteration += 1
