@@ -280,7 +280,7 @@ class DiscreteDeepQ(object):
                 newstates[i] = 0
                 newstates_mask[i] = 0
 
-        monitor_interval = 100
+        monitor_interval = 1000
         calculate_summaries = self.iteration % monitor_interval == 0 and \
                 self.summary_writer is not None
 
