@@ -29,9 +29,13 @@ def compute_style(style):
     return style_str
 
 class Scene:
-    def __init__(self, size=(400,400), image_name=[]):
+    def __init__(self, size=(400,400), image_name=[], image_size=None):
         self.items = []
         self.size = size
+        if image_size is None:
+            self.image_size = size
+        else:
+            self.image_size = image_size
         self.image_name = image_name
 
     def add(self,item):
@@ -48,7 +52,7 @@ class Scene:
         ]
         if self.image_name:
             var += ["<image x=\"0\" y=\"0\" height=\"%ipx\" width=\"%ipx\" "
-                    "xlink:href=\"%s\"/>\n" % (self.size[1],self.size[0], self.image_name)]
+                    "xlink:href=\"%s\"/>\n" % (self.image_size[1],self.image_size[0], self.image_name)]
 
 
         for item in self.items: var += item.strarray()

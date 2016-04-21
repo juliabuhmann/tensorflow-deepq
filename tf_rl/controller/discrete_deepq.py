@@ -165,6 +165,17 @@ class DiscreteDeepQ(object):
                 tf.scalar_summary('games_gotlost', got_lost_op)
                 tf.scalar_summary('games_steppedoutside', stepped_outside_op)
 
+                self.winning_games_last = tf.placeholder(tf.float32, (None))
+                self.got_lost_last = tf.placeholder(tf.float32, (None))
+                self.stepped_outside_last = tf.placeholder(tf.float32, (None))
+                winning_games_op_last = tf.identity(self.winning_games_last)
+                got_lost_op_last = tf.identity(self.got_lost_last)
+                stepped_outside_op_last = tf.identity(self.stepped_outside_last)
+                tf.scalar_summary('gameslast_winning', winning_games_op_last)
+                tf.scalar_summary('gameslast_gotlost', got_lost_op_last)
+                tf.scalar_summary('gameslast_steppedoutside', stepped_outside_op_last)
+
+
 
 
         with tf.name_scope("q_value_precition"):
@@ -312,6 +323,22 @@ class DiscreteDeepQ(object):
             feed_dict[self.got_lost] = game_watcher.number_of_lost_games/number_of_total_games
             feed_dict[self.stepped_outside] = game_watcher.number_of_outside_steps/number_of_total_games
             # print game_watcher.number_of_reached_goals/number_of_total_games
+            # Number encodes whether game was lost or won ...
+            if len(game_watcher.collected_game_identity) >= monitor_interval:
+                game_identities  = game_watcher.collected_game_identity[-monitor_interval:]
+                number_of_reached_goals =game_identities.count(1)
+                number_of_lost_games = game_identities.count(3)
+                number_of_outside_steps = game_identities.count(2)
+                feed_dict[self.winning_games_last] = number_of_reached_goals/float(monitor_interval)
+                feed_dict[self.got_lost_last] = number_of_lost_games/float(monitor_interval)
+                feed_dict[self.stepped_outside_last] = number_of_outside_steps/float(monitor_interval)
+            else:
+                feed_dict[self.winning_games_last] = 0.
+                feed_dict[self.got_lost_last] = 0.
+                feed_dict[self.stepped_outside_last] = 0.
+
+
+
 
         cost, _, summary_str = self.s.run([
             self.prediction_error,
