@@ -251,7 +251,7 @@ class DiscreteDeepQ(object):
                 self.experience.popleft()
         self.number_of_times_store_called += 1
 
-    def training_step(self):
+    def training_step(self, only_tensorboard=False):
         """Pick a self.minibatch_size exeperiences from reply buffer
         and backpropage the value function.
         """
@@ -339,19 +339,28 @@ class DiscreteDeepQ(object):
 
 
 
+        if only_tensorboard:
+            summary_str = self.s.run(self.summarize, feed_dict)
+            if calculate_summaries:
+                self.summary_writer.add_summary(summary_str, self.iteration)
+        else:
+            cost, _, summary_str = self.s.run([
+                self.prediction_error,
+                self.train_op,
+                self.summarize if calculate_summaries else self.no_op1,
+            ], feed_dict)
 
-        cost, _, summary_str = self.s.run([
-            self.prediction_error,
-            self.train_op,
-            self.summarize if calculate_summaries else self.no_op1,
-        ], feed_dict)
+            self.s.run(self.target_network_update)
 
-        self.s.run(self.target_network_update)
-
-        if calculate_summaries:
-            self.summary_writer.add_summary(summary_str, self.iteration)
+            if calculate_summaries:
+                self.summary_writer.add_summary(summary_str, self.iteration)
+            self.number_of_times_train_called += 1
+            self.collected_prediction_errors.append(cost)
 
         self.iteration += 1
-        self.collected_prediction_errors.append(cost)
 
-        self.number_of_times_train_called += 1
+
+
+
+
+
