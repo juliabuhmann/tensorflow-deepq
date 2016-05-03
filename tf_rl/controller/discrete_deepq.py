@@ -1,6 +1,8 @@
 import numpy as np
 import random
 import tensorflow as tf
+import os
+import pickle
 
 from collections import deque
 
@@ -23,7 +25,7 @@ class DiscreteDeepQ(object):
                        clip_reward = False,
                        replay_start_size= 1000,
                        summary_writer=None,
-                       game_watcher=None):
+                       game_watcher=None, game_watcher_test=None):
         """Initialized the Deepq object.
 
         Based on:
@@ -112,7 +114,8 @@ class DiscreteDeepQ(object):
         self.clip_reward = clip_reward
         self.collected_prediction_errors = []
         self.game_watcher = game_watcher
-
+        self.game_watch_summaries = []
+        self.game_watcher_test = game_watcher_test
         self.create_variables()
 
     def linear_annealing(self, n, total, p_initial, p_final):
@@ -161,9 +164,9 @@ class DiscreteDeepQ(object):
                 winning_games_op = tf.identity(self.winning_games)
                 got_lost_op = tf.identity(self.got_lost)
                 stepped_outside_op = tf.identity(self.stepped_outside)
-                tf.scalar_summary('games_winning', winning_games_op)
-                tf.scalar_summary('games_gotlost', got_lost_op)
-                tf.scalar_summary('games_steppedoutside', stepped_outside_op)
+                # tf.scalar_summary('games_winning', winning_games_op)
+                # tf.scalar_summary('games_gotlost', got_lost_op)
+                # tf.scalar_summary('games_steppedoutside', stepped_outside_op)
 
                 self.winning_games_last = tf.placeholder(tf.float32, (None))
                 self.got_lost_last = tf.placeholder(tf.float32, (None))
@@ -171,9 +174,15 @@ class DiscreteDeepQ(object):
                 winning_games_op_last = tf.identity(self.winning_games_last)
                 got_lost_op_last = tf.identity(self.got_lost_last)
                 stepped_outside_op_last = tf.identity(self.stepped_outside_last)
-                tf.scalar_summary('gameslast_winning', winning_games_op_last)
-                tf.scalar_summary('gameslast_gotlost', got_lost_op_last)
-                tf.scalar_summary('gameslast_steppedoutside', stepped_outside_op_last)
+                if self.game_watcher_test:
+                    self.winning_games_last_test = tf.placeholder(tf.float32, (None))
+                    self.got_lost_last_test = tf.placeholder(tf.float32, (None))
+                    self.stepped_outside_last_test = tf.placeholder(tf.float32, (None))
+                    winning_games_op_last_test = tf.identity(self.winning_games_last_test)
+                    got_lost_op_last_test = tf.identity(self.got_lost_last_test)
+                    stepped_outside_op_last_test = tf.identity(self.stepped_outside_last_test)
+
+
 
 
 
@@ -218,6 +227,20 @@ class DiscreteDeepQ(object):
         tf.scalar_summary("averaged_prediction_error", self.average_prediction_error)
         self.summarize = tf.merge_all_summaries()
         self.no_op1    = tf.no_op()
+        if self.game_watcher is not None:
+            str1 = tf.scalar_summary('gameswinning_train', winning_games_op_last)
+            str2 = tf.scalar_summary('gamesgotlost_train', got_lost_op_last)
+            str3 = tf.scalar_summary('gamessteppedoutside_train', stepped_outside_op_last)
+            self.game_watch_summaries = [str1, str2, str3]
+            if self.game_watcher_test is not None:
+                str1 = tf.scalar_summary('gameswinning_test', winning_games_op_last_test)
+                str2 = tf.scalar_summary('gamesgotlost_test', got_lost_op_last_test)
+                str3 = tf.scalar_summary('gamessteppedoutside_test', stepped_outside_op_last_test)
+                self.game_watch_summaries.extend([str1, str2, str3])
+
+
+
+
 
     def action(self, observation, randomness=True):
         """Given observation returns the action that should be chosen using
@@ -256,10 +279,12 @@ class DiscreteDeepQ(object):
         and backpropage the value function.
         """
         # if self.number_of_times_train_called % self.train_every_nth == 0:
-        if len(self.experience) <  self.minibatch_size or len(self.experience) \
+        if len(self.experience) <  self.minibatch_size:
+            return
+        if len(self.experience) \
                 < self.replay_start_size:
             # print 'returning'
-            return
+            only_tensorboard = True
             # if len(self.experience)< self.minibatch_size:
             #         return
 
@@ -324,14 +349,29 @@ class DiscreteDeepQ(object):
             feed_dict[self.stepped_outside] = game_watcher.number_of_outside_steps/number_of_total_games
             # print game_watcher.number_of_reached_goals/number_of_total_games
             # Number encodes whether game was lost or won ...
-            if len(game_watcher.collected_game_identity) >= monitor_interval:
-                game_identities  = game_watcher.collected_game_identity[-monitor_interval:]
-                number_of_reached_goals =game_identities.count(1)
-                number_of_lost_games = game_identities.count(3)
-                number_of_outside_steps = game_identities.count(2)
-                feed_dict[self.winning_games_last] = number_of_reached_goals/float(monitor_interval)
-                feed_dict[self.got_lost_last] = number_of_lost_games/float(monitor_interval)
-                feed_dict[self.stepped_outside_last] = number_of_outside_steps/float(monitor_interval)
+            number_of_games_monitor_interval = 100
+            if len(game_watcher.collected_game_identity) >= number_of_games_monitor_interval:
+                if len(game_watcher.collected_game_identity) % number_of_games_monitor_interval == 0:
+                    game_identities  = game_watcher.collected_game_identity[-number_of_games_monitor_interval:]
+                    number_of_reached_goals =game_identities.count(1)
+                    number_of_lost_games = game_identities.count(3)
+                    number_of_outside_steps = game_identities.count(2)
+
+                    win_perc = number_of_reached_goals/float(number_of_games_monitor_interval)
+                    get_lost_perc = number_of_lost_games/float(number_of_games_monitor_interval)
+                    step_out_perc = number_of_outside_steps/float(number_of_games_monitor_interval)
+                    feed_dict[self.winning_games_last] = win_perc
+                    feed_dict[self.got_lost_last] = get_lost_perc
+                    feed_dict[self.stepped_outside_last] = step_out_perc
+                    self.game_watcher.add_memory_of_last_interval(win_perc, get_lost_perc, step_out_perc)
+                    summary_str = self.s.run(self.game_watch_summaries, feed_dict)
+                    for element in summary_str:
+                        self.summary_writer.add_summary(element, self.game_watcher.number_of_games)
+                else:
+                    feed_dict[self.winning_games_last] = self.game_watcher.cur_winning_percentage
+                    feed_dict[self.got_lost_last] = self.game_watcher.cur_stepped_outside_percentage
+                    feed_dict[self.stepped_outside_last] = self.game_watcher.cur_getting_lost_percentage
+
             else:
                 feed_dict[self.winning_games_last] = 0.
                 feed_dict[self.got_lost_last] = 0.
@@ -341,6 +381,7 @@ class DiscreteDeepQ(object):
 
         if only_tensorboard:
             summary_str = self.s.run(self.summarize, feed_dict)
+            # summary_str = self.s.run(self.game_watch_summaries[0], feed_dict)
             if calculate_summaries:
                 self.summary_writer.add_summary(summary_str, self.iteration)
         else:
@@ -358,6 +399,22 @@ class DiscreteDeepQ(object):
             self.collected_prediction_errors.append(cost)
 
         self.iteration += 1
+
+    def write_experience_to_file(self, outputfilename=None):
+        #TODO(inefficient)
+        if outputfilename is None:
+            # get log direction
+            log_dir = self.summary_writer._logdir
+            outputfilename = log_dir + 'collected_experience_list.pickle'
+        f = open(outputfilename, 'wa')
+        pickle.dump(self.experience, f, protocol=pickle.HIGHEST_PROTOCOL)
+        f.close()
+        print "experience written to ", outputfilename
+
+
+
+
+
 
 
 
