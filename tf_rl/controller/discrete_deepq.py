@@ -236,7 +236,7 @@ class DiscreteDeepQ(object):
                 str1 = tf.scalar_summary('gameswinning_test', winning_games_op_last_test)
                 str2 = tf.scalar_summary('gamesgotlost_test', got_lost_op_last_test)
                 str3 = tf.scalar_summary('gamessteppedoutside_test', stepped_outside_op_last_test)
-                self.game_watch_summaries.extend([str1, str2, str3])
+                self.game_watch_test_summaries = [str1, str2, str3]
 
 
 
@@ -379,6 +379,7 @@ class DiscreteDeepQ(object):
 
 
 
+
         if only_tensorboard:
             summary_str = self.s.run(self.summarize, feed_dict)
             # summary_str = self.s.run(self.game_watch_summaries[0], feed_dict)
@@ -410,6 +411,34 @@ class DiscreteDeepQ(object):
         pickle.dump(self.experience, f, protocol=pickle.HIGHEST_PROTOCOL)
         f.close()
         print "experience written to ", outputfilename
+
+    def monitor_game_watcher_test_tensorboard(self, game_watcher,
+                                              summary_iteration, verbose=False):
+        feed_dict = {}
+        number_of_games = game_watcher.number_of_games
+        if number_of_games > 0:
+            game_identities = game_watcher.collected_game_identity
+            number_of_reached_goals =game_identities.count(1)
+            number_of_lost_games = game_identities.count(3)
+            number_of_outside_steps = game_identities.count(2)
+
+            win_perc = number_of_reached_goals/float(number_of_games)
+            get_lost_perc = number_of_lost_games/float(number_of_games)
+            step_out_perc = number_of_outside_steps/float(number_of_games)
+            feed_dict[self.winning_games_last_test] = win_perc
+            feed_dict[self.got_lost_last_test] = get_lost_perc
+            feed_dict[self.stepped_outside_last_test] = step_out_perc
+            summary_str = self.s.run(self.game_watch_test_summaries, feed_dict)
+            for element in summary_str:
+                self.summary_writer.add_summary(element, summary_iteration)
+            if verbose:
+                print 'winning', win_perc
+                print 'got lost', get_lost_perc
+                print 'stepped outside', step_out_perc
+        else:
+            print 'no games have been played so far'
+
+
 
 
 
