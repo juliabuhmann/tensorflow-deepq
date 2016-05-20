@@ -242,7 +242,7 @@ class DiscreteDeepQ(object):
 
 
 
-    def action(self, observation, randomness=True):
+    def action(self, observation, randomness=True, return_also_action_scores=False):
         """Given observation returns the action that should be chosen using
         DeepQ learning strategy. Does not backprop."""
         assert len(observation.shape) == 1, \
@@ -254,11 +254,25 @@ class DiscreteDeepQ(object):
                                               1.0,
                                               self.random_action_probability)
 
+        action_scores = self.s.run(self.action_scores, {self.observation: observation[np.newaxis,:]})
+
+
+
 
         if random.random() < exploration_p and randomness:
-            return random.randint(0, self.num_actions - 1)
+            random_action = random.randint(0, self.num_actions - 1)
+            if return_also_action_scores:
+                return random_action, False # for performance reason
+                # action scores are not calculated in the random case
+            else:
+                return random.randint(0, self.num_actions - 1)
         else:
-            return self.s.run(self.predicted_actions, {self.observation: observation[np.newaxis,:]})[0]
+            action_scores = self.s.run(self.action_scores, {self.observation: observation[np.newaxis,:]})
+            action_id = np.argmax(action_scores)
+            if return_also_action_scores:
+                return action_id, action_scores
+            else:
+                return action_id
 
     def store(self, observation, action, reward, newobservation):
         """Store experience, where starting with observation and

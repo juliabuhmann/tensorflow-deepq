@@ -51,7 +51,7 @@ class Scene:
            "  stroke-width:1;\">\n"
         ]
         if self.image_name:
-            var += ["<image x=\"0\" y=\"0\" height=\"%ipx\" width=\"%ipx\" "
+            var += ["<image x=\"10\" y=\"10\" height=\"%ipx\" width=\"%ipx\" "
                     "xlink:href=\"%s\"/>\n" % (self.image_size[1],self.image_size[0], self.image_name)]
 
 
