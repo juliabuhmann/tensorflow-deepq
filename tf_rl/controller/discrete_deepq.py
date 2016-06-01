@@ -25,7 +25,9 @@ class DiscreteDeepQ(object):
                        clip_reward = False,
                        replay_start_size= 1000,
                        summary_writer=None,
-                       game_watcher=None, game_watcher_test=None):
+                       game_watcher=None,
+                        game_watcher_test=None,
+                        perfect_actions_known=False):
         """Initialized the Deepq object.
 
         Based on:
@@ -89,7 +91,7 @@ class DiscreteDeepQ(object):
         self.q_network                 = observation_to_actions
         self.optimizer                 = optimizer
         self.s                         = session
-
+        self.perfect_actions_known = perfect_actions_known
         self.random_action_probability = random_action_probability
         self.exploration_period        = exploration_period
         self.store_every_nth           = store_every_nth
@@ -145,13 +147,17 @@ class DiscreteDeepQ(object):
             self.next_action_scores        = tf.stop_gradient(self.target_q_network(self.next_observation))
             tf.histogram_summary("target_action_scores", self.next_action_scores)
             self.rewards                   = tf.placeholder(tf.float32, (None,), name="rewards")
+            self.calculated_future_rewards         = tf.placeholder(tf.float32, (None,), name="calculated_future_rewards")
             reward_batch                   = tf.reduce_mean(self.rewards)
             tf.scalar_summary('reward_batch', reward_batch)
 
 
 
             target_values                  = tf.reduce_max(self.next_action_scores, reduction_indices=[1,]) * self.next_observation_mask
-            self.future_rewards            = self.rewards + self.discount_rate * target_values
+            if self.perfect_actions_known:
+                self.future_rewards = self.rewards + self.calculated_future_rewards
+            else:
+                self.future_rewards            = self.rewards + self.discount_rate * target_values
 
         with tf.name_scope("tensorboard_monitoring"):
             self.last_rewards               = tf.placeholder(tf.float32, (None,))
@@ -262,8 +268,10 @@ class DiscreteDeepQ(object):
         if random.random() < exploration_p and randomness:
             random_action = random.randint(0, self.num_actions - 1)
             if return_also_action_scores:
-                return random_action, False # for performance reason
+                # return random_action, False # for performance reason
+                return random_action, action_scores # for performance reason
                 # action scores are not calculated in the random case
+
             else:
                 return random.randint(0, self.num_actions - 1)
         else:
@@ -274,7 +282,7 @@ class DiscreteDeepQ(object):
             else:
                 return action_id
 
-    def store(self, observation, action, reward, newobservation):
+    def store(self, observation, action, reward, newobservation, exp_sum_reward=None):
         """Store experience, where starting with observation and
         execution action, we arrived at the newobservation and got thetarget_network_update
         reward reward
@@ -283,7 +291,7 @@ class DiscreteDeepQ(object):
         """
 
         if self.number_of_times_store_called % self.store_every_nth == 0:
-            self.experience.append((observation, action, reward, newobservation))
+            self.experience.append((observation, action, reward, newobservation, exp_sum_reward))
             if len(self.experience) > self.max_experience:
                 self.experience.popleft()
         self.number_of_times_store_called += 1
@@ -314,8 +322,9 @@ class DiscreteDeepQ(object):
 
         newstates_mask = np.empty((len(samples),))
         rewards        = np.empty((len(samples),))
+        exp_sum_rewards  = np.empty((len(samples),))
 
-        for i, (state, action, reward, newstate) in enumerate(samples):
+        for i, (state, action, reward, newstate, exp_sum_reward) in enumerate(samples):
             # Clip the reward to be in the range of -1 and 1 as suggested in the paper
             if self.clip_reward:
                 reward = np.clip(reward, -1.0, 1.0)
@@ -323,6 +332,7 @@ class DiscreteDeepQ(object):
             action_mask[i] = 0
             action_mask[i][action] = 1
             rewards[i] = reward
+            exp_sum_rewards[i] = exp_sum_reward
             if newstate is not None:
                 newstates[i] = newstate
                 newstates_mask[i] = 1
@@ -349,6 +359,7 @@ class DiscreteDeepQ(object):
             self.next_observation_mask:  newstates_mask,
             self.action_mask:            action_mask,
             self.rewards:                rewards,
+            self.calculated_future_rewards: exp_sum_rewards,
             self.prediction_error_collection_tf: self.collected_prediction_errors[-monitor_interval:],
             self.last_rewards: np.array(experiences)
         }
@@ -393,7 +404,6 @@ class DiscreteDeepQ(object):
 
 
 
-
         if only_tensorboard:
             summary_str = self.s.run(self.summarize, feed_dict)
             # summary_str = self.s.run(self.game_watch_summaries[0], feed_dict)
@@ -405,13 +415,15 @@ class DiscreteDeepQ(object):
                 self.train_op,
                 self.summarize if calculate_summaries else self.no_op1,
             ], feed_dict)
-
-            self.s.run(self.target_network_update)
+            if not self.perfect_actions_known:
+                self.s.run(self.target_network_update)
 
             if calculate_summaries:
                 self.summary_writer.add_summary(summary_str, self.iteration)
+                print 'cost', cost
             self.number_of_times_train_called += 1
             self.collected_prediction_errors.append(cost)
+
 
         self.iteration += 1
 
