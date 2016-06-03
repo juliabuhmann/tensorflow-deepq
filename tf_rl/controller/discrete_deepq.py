@@ -3,6 +3,7 @@ import random
 import tensorflow as tf
 import os
 import pickle
+import matplotlib.pyplot as plt
 
 from collections import deque
 
@@ -119,6 +120,7 @@ class DiscreteDeepQ(object):
         self.game_watch_summaries = []
         self.game_watcher_test = game_watcher_test
         self.create_variables()
+        self.actions_counter_distribution = [0]*num_actions  # Keep track of experience database distribution
 
     def linear_annealing(self, n, total, p_initial, p_final):
         """Linear annealing between p_initial and p_final
@@ -282,7 +284,8 @@ class DiscreteDeepQ(object):
             else:
                 return action_id
 
-    def store(self, observation, action, reward, newobservation, exp_sum_reward=None):
+    def store(self, observation, action, reward, newobservation,
+              exp_sum_reward=None, keep_experiences_balanced=False):
         """Store experience, where starting with observation and
         execution action, we arrived at the newobservation and got thetarget_network_update
         reward reward
@@ -291,9 +294,31 @@ class DiscreteDeepQ(object):
         """
 
         if self.number_of_times_store_called % self.store_every_nth == 0:
-            self.experience.append((observation, action, reward, newobservation, exp_sum_reward))
-            if len(self.experience) > self.max_experience:
-                self.experience.popleft()
+
+            accepted_distance = 10
+            action_with_highest_num = np.amax(self.actions_counter_distribution)
+            action_with_lowest_num = np.amin(self.actions_counter_distribution)
+            distance = action_with_highest_num - action_with_lowest_num
+            if distance > accepted_distance:
+                store_experience = False
+            else:
+                store_experience = True
+
+            cur_action_that_has_min = np.argmin(self.actions_counter_distribution)
+            if cur_action_that_has_min == action:
+                store_experience = True
+            if not keep_experiences_balanced:
+                store_experience = True # always store experience, independent of distribution
+
+            if store_experience:
+                self.experience.append((observation, action, reward, newobservation, exp_sum_reward))
+                self.actions_counter_distribution[action] += 1
+                if len(self.experience) > self.max_experience:
+                    removed_item = self.experience.popleft()
+                    removed_action = removed_item[1]
+                    self.actions_counter_distribution[removed_action] += -1
+
+
         self.number_of_times_store_called += 1
 
     def training_step(self, only_tensorboard=False):
@@ -470,7 +495,39 @@ class DiscreteDeepQ(object):
 
 
 
+    def plot_action_distribution_target_value_histogram(self, outputfilename=None):
+        # observation, action, reward, newobservation, exp_sum_reward
+        if len(self.experience) > 0:
+            actions = [experience[1] for experience in self.experience]
 
+            if self.perfect_actions_known:
+                exp_sum_rewards = [experience[4] for experience in self.experience]
+            rewards = [experience[2] for experience in self.experience]
+
+            if self.perfect_actions_known:
+                target_values = np.array(rewards)+ np.array(exp_sum_rewards)
+            else:
+                target_values = np.array(rewards)
+            actions = np.array(actions)
+            target_value_collection = []
+            number_of_actions = self.num_actions
+            f, axarr = plt.subplots(number_of_actions+1)
+            # f.clear()
+            for action_id in range(self.num_actions):
+
+                indeces_single_action = np.where(actions==action_id)
+                single_action_target_value = target_values[indeces_single_action]
+                target_value_collection.append(single_action_target_value)
+                axarr[action_id].hist(single_action_target_value)
+
+            # Create an axes instance
+        #     ax = fig.add_subplot(111)
+
+            axarr[number_of_actions].boxplot(target_value_collection)
+            plt.tight_layout()
+
+            if outputfilename is not None:
+                plt.savefig(outputfilename)
 
 
 
