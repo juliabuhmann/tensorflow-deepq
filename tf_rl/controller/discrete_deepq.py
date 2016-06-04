@@ -121,6 +121,9 @@ class DiscreteDeepQ(object):
         self.game_watcher_test = game_watcher_test
         self.create_variables()
         self.actions_counter_distribution = [0]*num_actions  # Keep track of experience database distribution
+        self.target_value_collection = {}
+        for ii in range(self.num_actions):
+            self.target_value_collection[ii] = []
 
     def linear_annealing(self, n, total, p_initial, p_final):
         """Linear annealing between p_initial and p_final
@@ -213,7 +216,7 @@ class DiscreteDeepQ(object):
             # Add histograms for gradients.
             for grad, var in gradients:
                 tf.histogram_summary(var.name, var)
-                if grad:
+                if grad is not None:
                     tf.histogram_summary(var.name + '/gradients', grad)
             self.train_op                   = self.optimizer.apply_gradients(gradients)
 
@@ -285,7 +288,7 @@ class DiscreteDeepQ(object):
                 return action_id
 
     def store(self, observation, action, reward, newobservation,
-              exp_sum_reward=None, keep_experiences_balanced=False):
+              exp_sum_reward=None, keep_experiences_balanced=False, balance_target_values=False):
         """Store experience, where starting with observation and
         execution action, we arrived at the newobservation and got thetarget_network_update
         reward reward
@@ -304,19 +307,56 @@ class DiscreteDeepQ(object):
             else:
                 store_experience = True
 
-            cur_action_that_has_min = np.argmin(self.actions_counter_distribution)
-            if cur_action_that_has_min == action:
-                store_experience = True
-            if not keep_experiences_balanced:
-                store_experience = True # always store experience, independent of distribution
+
+
+            if exp_sum_reward is not None:
+                target_value = reward + exp_sum_reward
+            else:
+                target_value = reward
+            if balance_target_values:
+                target_value_collection_of_cur_action = self.target_value_collection[action]
+                clip_range = (-0.0, 0.9)
+                target_value_collection_of_cur_action = np.clip(target_value_collection_of_cur_action, clip_range[0], clip_range[1])
+                hist, bin_edges = np.histogram(target_value_collection_of_cur_action, bins=6, range=clip_range)
+                accepted_freq = np.min(hist) + accepted_distance
+                slowest_elems = [ii for ii, elem in enumerate(hist) if elem < accepted_freq]
+                store_experience = False
+
+                # print slowest_elems
+                # print bin_edges
+                for slowest_elem in slowest_elems:
+                    # Check whether the target value is in one of the bins with a low value
+
+                    current_slowest_bin = bin_edges[slowest_elem:slowest_elem+2]
+
+                    assert len(current_slowest_bin) == 2
+                    if (current_slowest_bin[0] < target_value) & (target_value < current_slowest_bin[1]):
+                        store_experience = True
+
+                # print hist
+                # print store_experience
+                # print target_value
+
+                # print store_experience
+
+            # cur_action_that_has_min = np.argmin(self.actions_counter_distribution)
+            # if cur_action_that_has_min == action:
+            #     store_experience = True
+            # if not keep_experiences_balanced:
+            #     store_experience = True # always store experience, independent of distribution
 
             if store_experience:
                 self.experience.append((observation, action, reward, newobservation, exp_sum_reward))
                 self.actions_counter_distribution[action] += 1
+                self.target_value_collection[action].append(target_value)
                 if len(self.experience) > self.max_experience:
                     removed_item = self.experience.popleft()
                     removed_action = removed_item[1]
+
                     self.actions_counter_distribution[removed_action] += -1
+                    del self.target_value_collection[removed_action][0]
+
+
 
 
         self.number_of_times_store_called += 1
@@ -497,7 +537,7 @@ class DiscreteDeepQ(object):
 
     def plot_action_distribution_target_value_histogram(self, outputfilename=None):
         # observation, action, reward, newobservation, exp_sum_reward
-        if len(self.experience) > 0:
+        if len(self.experience) > 100:
             actions = [experience[1] for experience in self.experience]
 
             if self.perfect_actions_known:
@@ -513,21 +553,27 @@ class DiscreteDeepQ(object):
             number_of_actions = self.num_actions
             f, axarr = plt.subplots(number_of_actions+1)
             # f.clear()
+
             for action_id in range(self.num_actions):
 
                 indeces_single_action = np.where(actions==action_id)
                 single_action_target_value = target_values[indeces_single_action]
                 target_value_collection.append(single_action_target_value)
-                axarr[action_id].hist(single_action_target_value)
+
+                axarr[action_id].hist(single_action_target_value, bins=8)
+                print "---", action_id
+                print np.amin(single_action_target_value), 'min'
+                print np.amax(single_action_target_value), 'max'
 
             # Create an axes instance
         #     ax = fig.add_subplot(111)
 
             axarr[number_of_actions].boxplot(target_value_collection)
             plt.tight_layout()
-
+            # plt.show()
             if outputfilename is not None:
                 plt.savefig(outputfilename)
+                print 'saved to ', outputfilename
 
 
 
