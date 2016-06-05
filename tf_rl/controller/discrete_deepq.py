@@ -299,13 +299,15 @@ class DiscreteDeepQ(object):
         if self.number_of_times_store_called % self.store_every_nth == 0:
 
             accepted_distance = 10
-            action_with_highest_num = np.amax(self.actions_counter_distribution)
-            action_with_lowest_num = np.amin(self.actions_counter_distribution)
-            distance = action_with_highest_num - action_with_lowest_num
-            if distance > accepted_distance:
-                store_experience = False
+            # action_with_highest_num = np.amax(self.actions_counter_distribution)
+            # action_with_lowest_num = np.amin(self.actions_counter_distribution)
+            lowest_freq = np.min(self.actions_counter_distribution)
+            # distance = action_with_highest_num - action_with_lowest_num
+            freq_of_cur_action = self.actions_counter_distribution[action]
+            if freq_of_cur_action < accepted_distance + lowest_freq:
+                action_is_balanced = True
             else:
-                store_experience = True
+                action_is_balanced = False
 
 
 
@@ -320,7 +322,7 @@ class DiscreteDeepQ(object):
                 hist, bin_edges = np.histogram(target_value_collection_of_cur_action, bins=6, range=clip_range)
                 accepted_freq = np.min(hist) + accepted_distance
                 slowest_elems = [ii for ii, elem in enumerate(hist) if elem < accepted_freq]
-                store_experience = False
+                target_value_is_balanced = False
 
                 # print slowest_elems
                 # print bin_edges
@@ -331,8 +333,28 @@ class DiscreteDeepQ(object):
 
                     assert len(current_slowest_bin) == 2
                     if (current_slowest_bin[0] < target_value) & (target_value < current_slowest_bin[1]):
-                        store_experience = True
+                        target_value_is_balanced = True
 
+
+                # If also action distribution should be equal, check for it
+
+            store_experience = False
+            if not balance_target_values and not keep_experiences_balanced:
+                store_experience = True
+
+            if balance_target_values and keep_experiences_balanced:
+                if action_is_balanced and target_value_is_balanced:
+                    store_experience = True
+
+            if balance_target_values and not keep_experiences_balanced:
+                if target_value_is_balanced:
+                    store_experience = True
+
+            if not balance_target_values and keep_experiences_balanced:
+                if action_is_balanced:
+                    store_experience = True
+
+            # print store_experience
                 # print hist
                 # print store_experience
                 # print target_value
