@@ -310,7 +310,7 @@ class DiscreteDeepQ(object):
         if not keep_experiences_balanced and not balance_target_values and not self.range_of_target_values:
             self.range_of_target_values = (0, 0)
             print 'storing unbalanced experiences'
-
+        self.range_of_target_values = (0.7, 1.02)
         if self.number_of_times_store_called % self.store_every_nth == 0:
 
 
@@ -342,7 +342,8 @@ class DiscreteDeepQ(object):
                     accepted_freq = np.min(hist) + accepted_distance
                     slowest_elems = [ii for ii, elem in enumerate(hist) if elem < accepted_freq]
                     target_value_is_balanced = False
-
+                    # print 'cur action', action
+                    # print hist, bin_edges
                     # print slowest_elems
                     # print bin_edges
                     for slowest_elem in slowest_elems:
@@ -411,9 +412,14 @@ class DiscreteDeepQ(object):
                 if len(self.experience) > self.max_experience:
                     removed_item = self.experience.popleft()
                     removed_action = removed_item[1]
+                    if exp_sum_reward is not None:
+                        removed_target_value = removed_item[4] + removed_item[2]
+                    else:
+                        removed_target_value = removed_item[2]
 
                     self.actions_counter_distribution[removed_action] += -1
-                    del self.target_value_collection[removed_action][0]
+                    self.target_value_collection[removed_action].remove(removed_target_value)
+                    # del self.target_value_collection[removed_action][0]
 
 
 
@@ -619,10 +625,11 @@ class DiscreteDeepQ(object):
                 single_action_target_value = target_values[indeces_single_action]
                 target_value_collection.append(single_action_target_value)
 
-                axarr[action_id].hist(single_action_target_value, bins=6)
+                hist, bin_edges, __ = axarr[action_id].hist(single_action_target_value, bins=6, range=self.range_of_target_values)
                 print "---", action_id
                 print np.amin(single_action_target_value), 'min'
                 print np.amax(single_action_target_value), 'max'
+                print hist, bin_edges
 
             # Create an axes instance
         #     ax = fig.add_subplot(111)
