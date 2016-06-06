@@ -106,7 +106,7 @@ class DiscreteDeepQ(object):
 
         # deepq state
         self.actions_executed_so_far = 0
-        self.experience = deque()
+
 
         self.iteration = 0
         self.summary_writer = summary_writer
@@ -120,10 +120,19 @@ class DiscreteDeepQ(object):
         self.game_watch_summaries = []
         self.game_watcher_test = game_watcher_test
         self.create_variables()
+
+        self.initialize_experience_statistics()
+        self.range_of_target_values = ()
+
+    def initialize_experience_statistics(self):
+        self.experience = deque()
+        num_actions = self.num_actions
         self.actions_counter_distribution = [0]*num_actions  # Keep track of experience database distribution
         self.target_value_collection = {}
         for ii in range(self.num_actions):
             self.target_value_collection[ii] = []
+
+
 
     def linear_annealing(self, n, total, p_initial, p_final):
         """Linear annealing between p_initial and p_final
@@ -296,64 +305,92 @@ class DiscreteDeepQ(object):
         If newstate is None, the state/action pair is assumed to be terminal
         """
 
+        # dummy
+        # if no balanced is required, one can store from the beginning on
+        if not keep_experiences_balanced and not balance_target_values and not self.range_of_target_values:
+            self.range_of_target_values = (0, 0)
+            print 'storing unbalanced experiences'
+
         if self.number_of_times_store_called % self.store_every_nth == 0:
-
-            accepted_distance = 10
-            # action_with_highest_num = np.amax(self.actions_counter_distribution)
-            # action_with_lowest_num = np.amin(self.actions_counter_distribution)
-            lowest_freq = np.min(self.actions_counter_distribution)
-            # distance = action_with_highest_num - action_with_lowest_num
-            freq_of_cur_action = self.actions_counter_distribution[action]
-            if freq_of_cur_action < accepted_distance + lowest_freq:
-                action_is_balanced = True
-            else:
-                action_is_balanced = False
-
 
 
             if exp_sum_reward is not None:
                 target_value = reward + exp_sum_reward
             else:
                 target_value = reward
-            if balance_target_values:
-                target_value_collection_of_cur_action = self.target_value_collection[action]
-                clip_range = (-0.0, 0.9)
-                target_value_collection_of_cur_action = np.clip(target_value_collection_of_cur_action, clip_range[0], clip_range[1])
-                hist, bin_edges = np.histogram(target_value_collection_of_cur_action, bins=6, range=clip_range)
-                accepted_freq = np.min(hist) + accepted_distance
-                slowest_elems = [ii for ii, elem in enumerate(hist) if elem < accepted_freq]
-                target_value_is_balanced = False
 
-                # print slowest_elems
-                # print bin_edges
-                for slowest_elem in slowest_elems:
-                    # Check whether the target value is in one of the bins with a low value
+            # This indicates whether a range has already be found to set the clipping range
+            if self.range_of_target_values:
+                accepted_distance = 10
+                # action_with_highest_num = np.amax(self.actions_counter_distribution)
+                # action_with_lowest_num = np.amin(self.actions_counter_distribution)
+                lowest_freq = np.min(self.actions_counter_distribution)
+                # distance = action_with_highest_num - action_with_lowest_num
+                freq_of_cur_action = self.actions_counter_distribution[action]
+                if freq_of_cur_action < accepted_distance + lowest_freq:
+                    action_is_balanced = True
+                else:
+                    action_is_balanced = False
 
-                    current_slowest_bin = bin_edges[slowest_elem:slowest_elem+2]
 
-                    assert len(current_slowest_bin) == 2
-                    if (current_slowest_bin[0] < target_value) & (target_value < current_slowest_bin[1]):
-                        target_value_is_balanced = True
+
+                if balance_target_values:
+                    target_value_collection_of_cur_action = self.target_value_collection[action]
+                    clip_range = self.range_of_target_values
+                    target_value_collection_of_cur_action = np.clip(target_value_collection_of_cur_action, clip_range[0], clip_range[1])
+                    hist, bin_edges = np.histogram(target_value_collection_of_cur_action, bins=6, range=clip_range)
+                    accepted_freq = np.min(hist) + accepted_distance
+                    slowest_elems = [ii for ii, elem in enumerate(hist) if elem < accepted_freq]
+                    target_value_is_balanced = False
+
+                    # print slowest_elems
+                    # print bin_edges
+                    for slowest_elem in slowest_elems:
+                        # Check whether the target value is in one of the bins with a low value
+
+                        current_slowest_bin = bin_edges[slowest_elem:slowest_elem+2]
+
+                        assert len(current_slowest_bin) == 2
+                        if (current_slowest_bin[0] < target_value) & (target_value < current_slowest_bin[1]):
+                            target_value_is_balanced = True
 
 
                 # If also action distribution should be equal, check for it
 
-            store_experience = False
-            if not balance_target_values and not keep_experiences_balanced:
+                store_experience = False
+                if not balance_target_values and not keep_experiences_balanced:
+                    store_experience = True
+
+                if balance_target_values and keep_experiences_balanced:
+                    if action_is_balanced and target_value_is_balanced:
+                        store_experience = True
+
+                if balance_target_values and not keep_experiences_balanced:
+                    if target_value_is_balanced:
+                        store_experience = True
+
+                if not balance_target_values and keep_experiences_balanced:
+                    if action_is_balanced:
+                        store_experience = True
+
+            if len(self.experience) <= 500 and not self.range_of_target_values:
                 store_experience = True
 
-            if balance_target_values and keep_experiences_balanced:
-                if action_is_balanced and target_value_is_balanced:
-                    store_experience = True
+            if len(self.experience) == 500 and not self.range_of_target_values:
+                # get the current statistics to set the range
+                min_values = []
+                max_values = []
+                for ii in range(self.num_actions):
+                    target_values_of_current_action = self.target_value_collection[ii]
+                    min_values.append(np.amin(target_values_of_current_action))
+                    max_values.append(np.amax(target_values_of_current_action))
 
-            if balance_target_values and not keep_experiences_balanced:
-                if target_value_is_balanced:
-                    store_experience = True
-
-            if not balance_target_values and keep_experiences_balanced:
-                if action_is_balanced:
-                    store_experience = True
-
+                range_of_target_values = (np.min(min_values), np.max(max_values))
+                range_of_target_values = (0.7, 1.02)
+                self.range_of_target_values = range_of_target_values
+                print 'range of target values set to ', range_of_target_values
+                print 'resetting the experience database'
+                self.initialize_experience_statistics()
             # print store_experience
                 # print hist
                 # print store_experience
@@ -582,7 +619,7 @@ class DiscreteDeepQ(object):
                 single_action_target_value = target_values[indeces_single_action]
                 target_value_collection.append(single_action_target_value)
 
-                axarr[action_id].hist(single_action_target_value, bins=8)
+                axarr[action_id].hist(single_action_target_value, bins=6)
                 print "---", action_id
                 print np.amin(single_action_target_value), 'min'
                 print np.amax(single_action_target_value), 'max'
@@ -596,6 +633,8 @@ class DiscreteDeepQ(object):
             if outputfilename is not None:
                 plt.savefig(outputfilename)
                 print 'saved to ', outputfilename
+            else:
+                plt.show()
 
 
 
