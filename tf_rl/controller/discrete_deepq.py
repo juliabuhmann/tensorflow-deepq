@@ -28,7 +28,8 @@ class DiscreteDeepQ(object):
                        summary_writer=None,
                        game_watcher=None,
                         game_watcher_test=None,
-                        perfect_actions_known=False):
+                        perfect_actions_known=False,
+                    target_network_update_discrete=False):
         """Initialized the Deepq object.
 
         Based on:
@@ -88,7 +89,8 @@ class DiscreteDeepQ(object):
         # memorize arguments
         self.observation_size          = observation_size
         self.num_actions               = num_actions
-
+        self.target_network_update_discrete = target_network_update_discrete # The original way target network is implemented is continously,
+        # while the atari paper proposes a step update (every C step reset Q = Q_target)
         self.q_network                 = observation_to_actions
         self.optimizer                 = optimizer
         self.s                         = session
@@ -123,6 +125,7 @@ class DiscreteDeepQ(object):
 
         self.initialize_experience_statistics()
         self.range_of_target_values = ()
+
 
     def initialize_experience_statistics(self):
         self.experience = deque()
@@ -236,7 +239,10 @@ class DiscreteDeepQ(object):
             self.target_network_update = []
             for v_source, v_target in zip(self.q_network.variables(), self.target_q_network.variables()):
                 # this is equivalent to target = (1-alpha) * target + alpha * source
-                update_op = v_target.assign_sub(self.target_network_update_rate * (v_target - v_source))
+                if self.target_network_update_discrete:
+                    update_op = v_target.assign(v_source)
+                else:
+                    update_op = v_target.assign_sub(self.target_network_update_rate * (v_target - v_source))
                 self.target_network_update.append(update_op)
             self.target_network_update = tf.group(*self.target_network_update)
 
@@ -289,7 +295,7 @@ class DiscreteDeepQ(object):
             else:
                 return random.randint(0, self.num_actions - 1)
         else:
-            action_scores = self.s.run(self.action_scores, {self.observation: observation[np.newaxis,:]})
+            # action_scores = self.s.run(self.action_scores, {self.observation: observation[np.newaxis,:]})
             action_id = np.argmax(action_scores)
             if return_also_action_scores:
                 return action_id, action_scores
@@ -310,7 +316,7 @@ class DiscreteDeepQ(object):
         if not keep_experiences_balanced and not balance_target_values and not self.range_of_target_values:
             self.range_of_target_values = (0, 0)
             print 'storing unbalanced experiences'
-        self.range_of_target_values = (0.7, 1.02)
+        # self.range_of_target_values = (0.7, 1.02)
         if self.number_of_times_store_called % self.store_every_nth == 0:
 
 
@@ -387,7 +393,7 @@ class DiscreteDeepQ(object):
                     max_values.append(np.amax(target_values_of_current_action))
 
                 range_of_target_values = (np.min(min_values), np.max(max_values))
-                range_of_target_values = (0.7, 1.02)
+                # range_of_target_values = (0.7, 1.02)
                 self.range_of_target_values = range_of_target_values
                 print 'range of target values set to ', range_of_target_values
                 print 'resetting the experience database'
@@ -546,7 +552,11 @@ class DiscreteDeepQ(object):
                 self.summarize if calculate_summaries else self.no_op1,
             ], feed_dict)
             if not self.perfect_actions_known:
-                self.s.run(self.target_network_update)
+                if self.target_network_update_discrete:
+                    if self.iteration%int((1/(self.s.run(self.target_network_update_rate)))) == 0:
+                        self.s.run(self.target_network_update)
+                else:
+                    self.s.run(self.target_network_update)
 
             if calculate_summaries:
                 self.summary_writer.add_summary(summary_str, self.iteration)
@@ -591,13 +601,12 @@ class DiscreteDeepQ(object):
                 print 'winning', win_perc
                 print 'got lost', get_lost_perc
                 print 'stepped outside', step_out_perc
+
+            if len(self.experience) \
+                < self.replay_start_size:
+                print "not training, replay start size not reached yet"
         else:
             print 'no games have been played so far'
-
-
-
-
-
 
 
     def plot_action_distribution_target_value_histogram(self, outputfilename=None):
@@ -624,12 +633,16 @@ class DiscreteDeepQ(object):
                 indeces_single_action = np.where(actions==action_id)
                 single_action_target_value = target_values[indeces_single_action]
                 target_value_collection.append(single_action_target_value)
+                if self.range_of_target_values == (0, 0):
+                   range_of_target_values = None
+                else:
+                    range_of_target_values = self.range_of_target_values
 
-                hist, bin_edges, __ = axarr[action_id].hist(single_action_target_value, bins=6, range=self.range_of_target_values)
+                hist, bin_edges, __ = axarr[action_id].hist(single_action_target_value, bins=6, range=range_of_target_values)
                 print "---", action_id
                 print np.amin(single_action_target_value), 'min'
                 print np.amax(single_action_target_value), 'max'
-                print hist, bin_edges
+                # print hist, bin_edges
 
             # Create an axes instance
         #     ax = fig.add_subplot(111)
